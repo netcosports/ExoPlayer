@@ -146,7 +146,7 @@ public interface FormatEvaluator {
     public void evaluate(List<? extends MediaChunk> queue, long playbackPositionUs,
         Format[] formats, Evaluation evaluation) {
       Format newFormat = formats[random.nextInt(formats.length)];
-      if (evaluation.format != null && evaluation.format.id != newFormat.id) {
+      if (evaluation.format != null && !evaluation.format.id.equals(newFormat.id)) {
         evaluation.trigger = TRIGGER_ADAPTIVE;
       }
       evaluation.format = newFormat;
@@ -164,7 +164,7 @@ public interface FormatEvaluator {
    */
   public static class AdaptiveEvaluator implements FormatEvaluator {
 
-    public static final int DEFAULT_MAX_INITIAL_BYTE_RATE = 100000;
+    public static final int DEFAULT_MAX_INITIAL_BITRATE = 800000;
 
     public static final int DEFAULT_MIN_DURATION_FOR_QUALITY_INCREASE_MS = 10000;
     public static final int DEFAULT_MAX_DURATION_FOR_QUALITY_DECREASE_MS = 25000;
@@ -173,7 +173,7 @@ public interface FormatEvaluator {
 
     private final BandwidthMeter bandwidthMeter;
 
-    private final int maxInitialByteRate;
+    private final int maxInitialBitrate;
     private final long minDurationForQualityIncreaseUs;
     private final long maxDurationForQualityDecreaseUs;
     private final long minDurationToRetainAfterDiscardUs;
@@ -183,7 +183,7 @@ public interface FormatEvaluator {
      * @param bandwidthMeter Provides an estimate of the currently available bandwidth.
      */
     public AdaptiveEvaluator(BandwidthMeter bandwidthMeter) {
-      this (bandwidthMeter, DEFAULT_MAX_INITIAL_BYTE_RATE,
+      this (bandwidthMeter, DEFAULT_MAX_INITIAL_BITRATE,
           DEFAULT_MIN_DURATION_FOR_QUALITY_INCREASE_MS,
           DEFAULT_MAX_DURATION_FOR_QUALITY_DECREASE_MS,
           DEFAULT_MIN_DURATION_TO_RETAIN_AFTER_DISCARD_MS, DEFAULT_BANDWIDTH_FRACTION);
@@ -191,7 +191,7 @@ public interface FormatEvaluator {
 
     /**
      * @param bandwidthMeter Provides an estimate of the currently available bandwidth.
-     * @param maxInitialByteRate The maximum bandwidth in bytes per second that should be assumed
+     * @param maxInitialBitrate The maximum bitrate in bits per second that should be assumed
      *     when bandwidthMeter cannot provide an estimate due to playback having only just started.
      * @param minDurationForQualityIncreaseMs The minimum duration of buffered data required for
      *     the evaluator to consider switching to a higher quality format.
@@ -206,13 +206,13 @@ public interface FormatEvaluator {
      *     for inaccuracies in the bandwidth estimator.
      */
     public AdaptiveEvaluator(BandwidthMeter bandwidthMeter,
-        int maxInitialByteRate,
+        int maxInitialBitrate,
         int minDurationForQualityIncreaseMs,
         int maxDurationForQualityDecreaseMs,
         int minDurationToRetainAfterDiscardMs,
         float bandwidthFraction) {
       this.bandwidthMeter = bandwidthMeter;
-      this.maxInitialByteRate = maxInitialByteRate;
+      this.maxInitialBitrate = maxInitialBitrate;
       this.minDurationForQualityIncreaseUs = minDurationForQualityIncreaseMs * 1000L;
       this.maxDurationForQualityDecreaseUs = maxDurationForQualityDecreaseMs * 1000L;
       this.minDurationToRetainAfterDiscardUs = minDurationToRetainAfterDiscardMs * 1000L;
@@ -235,9 +235,9 @@ public interface FormatEvaluator {
       long bufferedDurationUs = queue.isEmpty() ? 0
           : queue.get(queue.size() - 1).endTimeUs - playbackPositionUs;
       Format current = evaluation.format;
-      Format ideal = determineIdealFormat(formats, bandwidthMeter.getEstimate());
-      boolean isHigher = ideal != null && current != null && ideal.bandwidth > current.bandwidth;
-      boolean isLower = ideal != null && current != null && ideal.bandwidth < current.bandwidth;
+      Format ideal = determineIdealFormat(formats, bandwidthMeter.getBitrateEstimate());
+      boolean isHigher = ideal != null && current != null && ideal.bitrate > current.bitrate;
+      boolean isLower = ideal != null && current != null && ideal.bitrate < current.bitrate;
       if (isHigher) {
         if (bufferedDurationUs < minDurationForQualityIncreaseUs) {
           // The ideal format is a higher quality, but we have insufficient buffer to
@@ -247,11 +247,11 @@ public interface FormatEvaluator {
           // We're switching from an SD stream to a stream of higher resolution. Consider
           // discarding already buffered media chunks. Specifically, discard media chunks starting
           // from the first one that is of lower bandwidth, lower resolution and that is not HD.
-          for (int i = 0; i < queue.size(); i++) {
+          for (int i = 1; i < queue.size(); i++) {
             MediaChunk thisChunk = queue.get(i);
             long durationBeforeThisSegmentUs = thisChunk.startTimeUs - playbackPositionUs;
             if (durationBeforeThisSegmentUs >= minDurationToRetainAfterDiscardUs
-                && thisChunk.format.bandwidth < ideal.bandwidth
+                && thisChunk.format.bitrate < ideal.bitrate
                 && thisChunk.format.height < ideal.height
                 && thisChunk.format.height < 720
                 && thisChunk.format.width < 1280) {
@@ -276,11 +276,11 @@ public interface FormatEvaluator {
     /**
      * Compute the ideal format ignoring buffer health.
      */
-    protected Format determineIdealFormat(Format[] formats, long bandwidthEstimate) {
-      long effectiveBandwidth = computeEffectiveBandwidthEstimate(bandwidthEstimate);
+    protected Format determineIdealFormat(Format[] formats, long bitrateEstimate) {
+      long effectiveBitrate = computeEffectiveBitrateEstimate(bitrateEstimate);
       for (int i = 0; i < formats.length; i++) {
         Format format = formats[i];
-        if (format.bandwidth <= effectiveBandwidth) {
+        if (format.bitrate <= effectiveBitrate) {
           return format;
         }
       }
@@ -291,9 +291,9 @@ public interface FormatEvaluator {
     /**
      * Apply overhead factor, or default value in absence of estimate.
      */
-    protected long computeEffectiveBandwidthEstimate(long bandwidthEstimate) {
-      return bandwidthEstimate == BandwidthMeter.NO_ESTIMATE
-          ? maxInitialByteRate : (long) (bandwidthEstimate * bandwidthFraction);
+    protected long computeEffectiveBitrateEstimate(long bitrateEstimate) {
+      return bitrateEstimate == BandwidthMeter.NO_ESTIMATE
+          ? maxInitialBitrate : (long) (bitrateEstimate * bandwidthFraction);
     }
 
   }

@@ -18,7 +18,7 @@ package com.google.android.exoplayer.dash.mpd;
 import com.google.android.exoplayer.ParserException;
 import com.google.android.exoplayer.util.ManifestFetcher;
 
-import org.xmlpull.v1.XmlPullParserException;
+import android.net.Uri;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -57,12 +57,8 @@ public final class MediaPresentationDescriptionFetcher extends
 
   @Override
   protected MediaPresentationDescription parse(InputStream stream, String inputEncoding,
-      String contentId) throws IOException, ParserException {
-    try {
-      return parser.parseMediaPresentationDescription(stream, inputEncoding, contentId);
-    } catch (XmlPullParserException e) {
-      throw new ParserException(e);
-    }
+      String contentId, Uri baseUrl) throws IOException, ParserException {
+    return parser.parseMediaPresentationDescription(stream, inputEncoding, contentId, baseUrl);
   }
 
 }

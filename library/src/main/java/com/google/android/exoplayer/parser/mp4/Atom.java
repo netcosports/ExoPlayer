@@ -16,14 +16,13 @@
 package com.google.android.exoplayer.parser.mp4;
 
 import java.util.ArrayList;
-import java.util.List;
 
 /* package */ abstract class Atom {
 
   public static final int TYPE_avc1 = 0x61766331;
+  public static final int TYPE_avc3 = 0x61766333;
   public static final int TYPE_esds = 0x65736473;
   public static final int TYPE_mdat = 0x6D646174;
-  public static final int TYPE_mfhd = 0x6D666864;
   public static final int TYPE_mp4a = 0x6D703461;
   public static final int TYPE_tfdt = 0x74666474;
   public static final int TYPE_tfhd = 0x74666864;
@@ -53,6 +52,7 @@ import java.util.List;
   public static final int TYPE_frma = 0x66726D61;
   public static final int TYPE_saiz = 0x7361697A;
   public static final int TYPE_uuid = 0x75756964;
+  public static final int TYPE_senc = 0x73656E63;
 
   public final int type;
 
@@ -62,15 +62,11 @@ import java.util.List;
 
   public final static class LeafAtom extends Atom {
 
-    private final ParsableByteArray data;
+    public final ParsableByteArray data;
 
     public LeafAtom(int type, ParsableByteArray data) {
       super(type);
       this.data = data;
-    }
-
-    public ParsableByteArray getData() {
-      return data;
     }
 
   }
@@ -89,7 +85,8 @@ import java.util.List;
     }
 
     public LeafAtom getLeafAtomOfType(int type) {
-      for (int i = 0; i < children.size(); i++) {
+      int childrenSize = children.size();
+      for (int i = 0; i < childrenSize; i++) {
         Atom atom = children.get(i);
         if (atom.type == type) {
           return (LeafAtom) atom;
@@ -99,17 +96,14 @@ import java.util.List;
     }
 
     public ContainerAtom getContainerAtomOfType(int type) {
-      for (int i = 0; i < children.size(); i++) {
+      int childrenSize = children.size();
+      for (int i = 0; i < childrenSize; i++) {
         Atom atom = children.get(i);
         if (atom.type == type) {
           return (ContainerAtom) atom;
         }
       }
       return null;
-    }
-
-    public List<Atom> getChildren() {
-      return children;
     }
 
   }

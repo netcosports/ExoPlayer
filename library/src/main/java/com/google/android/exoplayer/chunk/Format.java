@@ -15,12 +15,14 @@
  */
 package com.google.android.exoplayer.chunk;
 
+import com.google.android.exoplayer.util.Assertions;
+
 import java.util.Comparator;
 
 /**
- * A format definition for streams.
+ * Defines the high level format of a media stream.
  */
-public final class Format {
+public class Format {
 
   /**
    * Sorts {@link Format} objects in order of decreasing bandwidth.
@@ -29,7 +31,7 @@ public final class Format {
 
     @Override
     public int compare(Format a, Format b) {
-      return b.bandwidth - a.bandwidth;
+      return b.bitrate - a.bitrate;
     }
 
   }
@@ -37,7 +39,7 @@ public final class Format {
   /**
    * An identifier for the format.
    */
-  public final int id;
+  public final String id;
 
   /**
    * The mime type of the format.
@@ -65,8 +67,24 @@ public final class Format {
   public final int audioSamplingRate;
 
   /**
-   * The average bandwidth in bytes per second.
+   * The average bandwidth in bits per second.
    */
+  public final int bitrate;
+
+  /**
+   * The language of the format. Can be null if unknown.
+   * <p>
+   * The language codes are two-letter lowercase ISO language codes (such as "en") as defined by
+   * ISO 639-1.
+   */
+  public final String language;
+
+  /**
+   * The average bandwidth in bytes per second.
+   *
+   * @deprecated Use {@link #bitrate}. However note that the units of measurement are different.
+   */
+  @Deprecated
   public final int bandwidth;
 
   /**
@@ -76,17 +94,54 @@ public final class Format {
    * @param height The height of the video in pixels, or -1 for non-video formats.
    * @param numChannels The number of audio channels, or -1 for non-audio formats.
    * @param audioSamplingRate The audio sampling rate in Hz, or -1 for non-audio formats.
-   * @param bandwidth The average bandwidth of the format in bytes per second.
+   * @param bitrate The average bandwidth of the format in bits per second.
    */
-  public Format(int id, String mimeType, int width, int height, int numChannels,
-      int audioSamplingRate, int bandwidth) {
-    this.id = id;
+  public Format(String id, String mimeType, int width, int height, int numChannels,
+      int audioSamplingRate, int bitrate) {
+    this(id, mimeType, width, height, numChannels, audioSamplingRate, bitrate, null);
+  }
+
+  /**
+   * @param id The format identifier.
+   * @param mimeType The format mime type.
+   * @param width The width of the video in pixels, or -1 for non-video formats.
+   * @param height The height of the video in pixels, or -1 for non-video formats.
+   * @param numChannels The number of audio channels, or -1 for non-audio formats.
+   * @param audioSamplingRate The audio sampling rate in Hz, or -1 for non-audio formats.
+   * @param bitrate The average bandwidth of the format in bits per second.
+   * @param language The language of the format.
+   */
+  public Format(String id, String mimeType, int width, int height, int numChannels,
+      int audioSamplingRate, int bitrate, String language) {
+    this.id = Assertions.checkNotNull(id);
     this.mimeType = mimeType;
     this.width = width;
     this.height = height;
     this.numChannels = numChannels;
     this.audioSamplingRate = audioSamplingRate;
-    this.bandwidth = bandwidth;
+    this.bitrate = bitrate;
+    this.language = language;
+    this.bandwidth = bitrate / 8;
+  }
+
+  @Override
+  public int hashCode() {
+    return id.hashCode();
+  }
+
+  /**
+   * Implements equality based on {@link #id} only.
+   */
+  @Override
+  public boolean equals(Object obj) {
+    if (this == obj) {
+      return true;
+    }
+    if (obj == null || getClass() != obj.getClass()) {
+      return false;
+    }
+    Format other = (Format) obj;
+    return other.id.equals(id);
   }
 
 }

@@ -27,6 +27,7 @@ import android.media.AudioTimestamp;
 import android.media.AudioTrack;
 import android.media.MediaCodec;
 import android.media.MediaFormat;
+import android.media.audiofx.Virtualizer;
 import android.os.ConditionVariable;
 import android.os.Handler;
 import android.util.Log;
@@ -91,9 +92,20 @@ public class MediaCodecAudioTrackRenderer extends MediaCodecTrackRenderer {
 
   private static final long MICROS_PER_SECOND = 1000000L;
 
+  /**
+   * AudioTrack timestamps are deemed spurious if they are offset from the system clock by more
+   * than this amount. This is a fail safe that should not be required on correctly functioning
+   * devices.
+   */
+  private static final long MAX_AUDIO_TIMSTAMP_OFFSET_US = 10 * MICROS_PER_SECOND;
+
   private static final int MAX_PLAYHEAD_OFFSET_COUNT = 10;
   private static final int MIN_PLAYHEAD_OFFSET_SAMPLE_INTERVAL_US = 30000;
   private static final int MIN_TIMESTAMP_SAMPLE_INTERVAL_US = 500000;
+
+  private static final int START_NOT_SET = 0;
+  private static final int START_IN_SYNC = 1;
+  private static final int START_NEED_SYNC = 2;
 
   private final EventListener eventListener;
   private final ConditionVariable audioTrackReleasingConditionVariable;
@@ -119,7 +131,7 @@ public class MediaCodecAudioTrackRenderer extends MediaCodecTrackRenderer {
   private Method audioTrackGetLatencyMethod;
   private int audioSessionId;
   private long submittedBytes;
-  private boolean audioTrackStartMediaTimeSet;
+  private int audioTrackStartMediaTimeState;
   private long audioTrackStartMediaTimeUs;
   private long audioTrackResumeSystemTimeUs;
   private long lastReportedCurrentPositionUs;
@@ -262,8 +274,6 @@ public class MediaCodecAudioTrackRenderer extends MediaCodecTrackRenderer {
 
   @Override
   protected void onOutputFormatChanged(MediaFormat format) {
-    releaseAudioTrack();
-    this.sampleRate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE);
     int channelCount = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT);
     int channelConfig;
     switch (channelCount) {
@@ -279,6 +289,16 @@ public class MediaCodecAudioTrackRenderer extends MediaCodecTrackRenderer {
       default:
         throw new IllegalArgumentException("Unsupported channel count: " + channelCount);
     }
+
+    int sampleRate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE);
+    if (audioTrack != null && this.sampleRate == sampleRate
+        && this.channelConfig == channelConfig) {
+      // We already have an existing audio track with the correct sample rate and channel config.
+      return;
+    }
+
+    releaseAudioTrack();
+    this.sampleRate = sampleRate;
     this.channelConfig = channelConfig;
     this.minBufferSize = AudioTrack.getMinBufferSize(sampleRate, channelConfig,
         AudioFormat.ENCODING_PCM_16BIT);
@@ -346,9 +366,9 @@ public class MediaCodecAudioTrackRenderer extends MediaCodecTrackRenderer {
    * subsequently re-enabled.
    * <p>
    * The default implementation is a no-op. One reason for overriding this method would be to
-   * instantiate and enable a {@link android.media.audiofx.Virtualizer} in order to spatialize the
-   * audio channels. For this use case, any {@link android.media.audiofx.Virtualizer} instances
-   * should be released in {@link #onDisabled()} (if not before).
+   * instantiate and enable a {@link Virtualizer} in order to spatialize the audio channels. For
+   * this use case, any {@link Virtualizer} instances should be released in {@link #onDisabled()}
+   * (if not before).
    *
    * @param audioSessionId The audio session id.
    */
@@ -363,7 +383,7 @@ public class MediaCodecAudioTrackRenderer extends MediaCodecTrackRenderer {
       lastRawPlaybackHeadPosition = 0;
       rawPlaybackHeadWrapCount = 0;
       audioTrackStartMediaTimeUs = 0;
-      audioTrackStartMediaTimeSet = false;
+      audioTrackStartMediaTimeState = START_NOT_SET;
       resetSyncParams();
       int playState = audioTrack.getPlayState();
       if (playState == AudioTrack.PLAYSTATE_PLAYING) {
@@ -413,7 +433,8 @@ public class MediaCodecAudioTrackRenderer extends MediaCodecTrackRenderer {
 
   @Override
   protected boolean isReady() {
-    return getPendingFrameCount() > 0;
+    return getPendingFrameCount() > 0
+        || (super.isReady() && getSourceState() == SOURCE_STATE_READY_READ_MAY_FAIL);
   }
 
   /**
@@ -429,7 +450,7 @@ public class MediaCodecAudioTrackRenderer extends MediaCodecTrackRenderer {
   protected long getCurrentPositionUs() {
     long systemClockUs = System.nanoTime() / 1000;
     long currentPositionUs;
-    if (audioTrack == null || !audioTrackStartMediaTimeSet) {
+    if (audioTrack == null || audioTrackStartMediaTimeState == START_NOT_SET) {
       // The AudioTrack hasn't started.
       currentPositionUs = super.getCurrentPositionUs();
     } else if (audioTimestampSet) {
@@ -461,7 +482,8 @@ public class MediaCodecAudioTrackRenderer extends MediaCodecTrackRenderer {
   }
 
   private void maybeSampleSyncParams() {
-    if (audioTrack == null || !audioTrackStartMediaTimeSet || getState() != STATE_STARTED) {
+    if (audioTrack == null || audioTrackStartMediaTimeState == START_NOT_SET
+        || getState() != STATE_STARTED) {
       // The AudioTrack isn't playing.
       return;
     }
@@ -487,11 +509,18 @@ public class MediaCodecAudioTrackRenderer extends MediaCodecTrackRenderer {
 
     if (systemClockUs - lastTimestampSampleTimeUs >= MIN_TIMESTAMP_SAMPLE_INTERVAL_US) {
       audioTimestampSet = audioTimestampCompat.initTimestamp(audioTrack);
-      if (audioTimestampSet
-          && (audioTimestampCompat.getNanoTime() / 1000) < audioTrackResumeSystemTimeUs) {
-        // The timestamp was set, but it corresponds to a time before the track was most recently
-        // resumed.
-        audioTimestampSet = false;
+      if (audioTimestampSet) {
+        // Perform sanity checks on the timestamp.
+        long audioTimestampUs = audioTimestampCompat.getNanoTime() / 1000;
+        if (audioTimestampUs < audioTrackResumeSystemTimeUs) {
+          // The timestamp corresponds to a time before the track was most recently resumed.
+          audioTimestampSet = false;
+        } else if (Math.abs(audioTimestampUs - systemClockUs) > MAX_AUDIO_TIMSTAMP_OFFSET_US) {
+          // The timestamp time base is probably wrong.
+          audioTimestampSet = false;
+          Log.w(TAG, "Spurious audio timestamp: " + audioTimestampCompat.getFramePosition() + ", "
+              + audioTimestampUs + ", " + systemClockUs);
+        }
       }
       if (audioTrackGetLatencyMethod != null) {
         try {
@@ -549,25 +578,40 @@ public class MediaCodecAudioTrackRenderer extends MediaCodecTrackRenderer {
 
   @Override
   protected boolean processOutputBuffer(long timeUs, MediaCodec codec, ByteBuffer buffer,
-      MediaCodec.BufferInfo bufferInfo, int bufferIndex) throws ExoPlaybackException {
+      MediaCodec.BufferInfo bufferInfo, int bufferIndex, boolean shouldSkip)
+      throws ExoPlaybackException {
+    if (shouldSkip) {
+      codec.releaseOutputBuffer(bufferIndex, false);
+      codecCounters.skippedOutputBufferCount++;
+      if (audioTrackStartMediaTimeState == START_IN_SYNC) {
+        // Skipping the sample will push track time out of sync. We'll need to sync again.
+        audioTrackStartMediaTimeState = START_NEED_SYNC;
+      }
+      return true;
+    }
+
     if (temporaryBufferSize == 0) {
       // This is the first time we've seen this {@code buffer}.
-
       // Note: presentationTimeUs corresponds to the end of the sample, not the start.
       long bufferStartTime = bufferInfo.presentationTimeUs -
           framesToDurationUs(bufferInfo.size / frameSize);
-      if (!audioTrackStartMediaTimeSet) {
+      if (audioTrackStartMediaTimeState == START_NOT_SET) {
         audioTrackStartMediaTimeUs = Math.max(0, bufferStartTime);
-        audioTrackStartMediaTimeSet = true;
+        audioTrackStartMediaTimeState = START_IN_SYNC;
       } else {
         // Sanity check that bufferStartTime is consistent with the expected value.
         long expectedBufferStartTime = audioTrackStartMediaTimeUs +
             framesToDurationUs(submittedBytes / frameSize);
-        if (Math.abs(expectedBufferStartTime - bufferStartTime) > 200000) {
+        if (audioTrackStartMediaTimeState == START_IN_SYNC
+            && Math.abs(expectedBufferStartTime - bufferStartTime) > 200000) {
           Log.e(TAG, "Discontinuity detected [expected " + expectedBufferStartTime + ", got " +
               bufferStartTime + "]");
-          // Adjust audioTrackStartMediaTimeUs to compensate for the discontinuity. Also reset
-          // lastReportedCurrentPositionUs to allow time to jump backwards if it really wants to.
+          audioTrackStartMediaTimeState = START_NEED_SYNC;
+        }
+        if (audioTrackStartMediaTimeState == START_NEED_SYNC) {
+          // Adjust audioTrackStartMediaTimeUs to be consistent with the current buffer's start
+          // time and the number of bytes submitted. Also reset lastReportedCurrentPositionUs to
+          // allow time to jump backwards if it really wants to.
           audioTrackStartMediaTimeUs += (bufferStartTime - expectedBufferStartTime);
           lastReportedCurrentPositionUs = 0;
         }

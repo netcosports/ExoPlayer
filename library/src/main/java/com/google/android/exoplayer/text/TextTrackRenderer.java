@@ -16,7 +16,7 @@
 package com.google.android.exoplayer.text;
 
 import com.google.android.exoplayer.ExoPlaybackException;
-import com.google.android.exoplayer.FormatHolder;
+import com.google.android.exoplayer.MediaFormatHolder;
 import com.google.android.exoplayer.SampleHolder;
 import com.google.android.exoplayer.SampleSource;
 import com.google.android.exoplayer.TrackRenderer;
@@ -64,7 +64,7 @@ public class TextTrackRenderer extends TrackRenderer implements Callback {
   private final TextRenderer textRenderer;
   private final SampleSource source;
   private final SampleHolder sampleHolder;
-  private final FormatHolder formatHolder;
+  private final MediaFormatHolder formatHolder;
   private final SubtitleParser subtitleParser;
 
   private int trackIndex;
@@ -93,7 +93,7 @@ public class TextTrackRenderer extends TrackRenderer implements Callback {
     this.textRenderer = Assertions.checkNotNull(textRenderer);
     this.textRendererHandler = textRendererLooper == null ? null : new Handler(textRendererLooper,
         this);
-    formatHolder = new FormatHolder();
+    formatHolder = new MediaFormatHolder();
     sampleHolder = new SampleHolder(true);
   }
 
@@ -144,7 +144,12 @@ public class TextTrackRenderer extends TrackRenderer implements Callback {
 
   @Override
   protected void doSomeWork(long timeUs) throws ExoPlaybackException {
-    source.continueBuffering(timeUs);
+    try {
+      source.continueBuffering(timeUs);
+    } catch (IOException e) {
+      throw new ExoPlaybackException(e);
+    }
+
     currentPositionUs = timeUs;
 
     // We're iterating through the events in a subtitle. Set textRendererNeedsUpdate if we advance
@@ -225,7 +230,7 @@ public class TextTrackRenderer extends TrackRenderer implements Callback {
   @Override
   protected long getBufferedPositionUs() {
     // Don't block playback whilst subtitles are loading.
-    return END_OF_TRACK;
+    return END_OF_TRACK_US;
   }
 
   @Override
@@ -275,7 +280,6 @@ public class TextTrackRenderer extends TrackRenderer implements Callback {
     }
   }
 
-  @SuppressWarnings("unchecked")
   @Override
   public boolean handleMessage(Message msg) {
     switch (msg.what) {

@@ -26,6 +26,16 @@ get started.
 [Class reference]: http://google.github.io/ExoPlayer/doc/reference/com/google/android/exoplayer/package-summary.html
 
 
+## Project branches ##
+
+  * The [master][] branch holds the most recent minor release.
+  * Most development work happens on the [dev][] branch.
+  * Additional development branches may be established for major features.
+
+[master]: https://github.com/google/ExoPlayer/tree/master
+[dev]: https://github.com/google/ExoPlayer/tree/dev
+
+
 ## Using Eclipse ##
 
 The repository includes Eclipse projects for both the ExoPlayer library and its
@@ -45,6 +55,22 @@ accompanying demo application. To get started:
 
 ## Using Gradle ##
 
-ExoPlayer can also be built using Gradle. For a complete list of tasks, run:
+ExoPlayer can also be built using Gradle. You can include it as a dependent project and build from source. e.g.
 
-./gradlew tasks
+```
+// setting.gradle
+include ':app', ':..:ExoPlayer:library'
+
+// app/build.gradle
+dependencies {
+    compile project(':..:ExoPlayer:library')
+}
+```
+
+If you want to use ExoPlayer as a jar, run:
+
+```
+./gradlew jarRelease
+```
+
+and copy library.jar to the libs-folder of your new project.

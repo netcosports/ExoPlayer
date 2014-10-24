@@ -17,6 +17,7 @@ package com.google.android.exoplayer.parser.webm;
 
 import com.google.android.exoplayer.MediaFormat;
 import com.google.android.exoplayer.SampleHolder;
+import com.google.android.exoplayer.parser.Extractor;
 import com.google.android.exoplayer.parser.SegmentIndex;
 import com.google.android.exoplayer.upstream.NonBlockingInputStream;
 import com.google.android.exoplayer.util.LongArray;
@@ -25,18 +26,21 @@ import com.google.android.exoplayer.util.MimeTypes;
 import android.annotation.TargetApi;
 import android.media.MediaExtractor;
 
+import java.nio.ByteBuffer;
 import java.util.Arrays;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 
 /**
- * Facilitates the extraction of data from the WebM container format with a
- * non-blocking, incremental parser based on {@link EbmlReader}.
+ * An extractor to facilitate data retrieval from the WebM container format.
  *
  * <p>WebM is a subset of the EBML elements defined for Matroska. More information about EBML and
  * Matroska is available <a href="http://www.matroska.org/technical/specs/index.html">here</a>.
  * More info about WebM is <a href="http://www.webmproject.org/code/specs/container/">here</a>.
  */
 @TargetApi(16)
-public final class WebmExtractor extends EbmlReader {
+public final class WebmExtractor implements Extractor {
 
   private static final String DOC_TYPE_WEBM = "webm";
   private static final String CODEC_ID_VP9 = "V_VP9";
@@ -77,19 +81,22 @@ public final class WebmExtractor extends EbmlReader {
   private static final int LACING_FIXED = 2;
   private static final int LACING_EBML = 3;
 
+  private static final int READ_TERMINATING_RESULTS = RESULT_NEED_MORE_DATA | RESULT_END_OF_STREAM
+      | RESULT_READ_SAMPLE | RESULT_NEED_SAMPLE_HOLDER;
+
+  private final EbmlReader reader;
   private final byte[] simpleBlockTimecodeAndFlags = new byte[3];
 
-  private SampleHolder tempSampleHolder;
-  private boolean sampleRead;
+  private SampleHolder sampleHolder;
+  private int readResults;
 
-  private boolean prepared = false;
-  private long segmentStartPosition = UNKNOWN;
-  private long segmentEndPosition = UNKNOWN;
+  private long segmentStartOffsetBytes = UNKNOWN;
+  private long segmentEndOffsetBytes = UNKNOWN;
   private long timecodeScale = 1000000L;
   private long durationUs = UNKNOWN;
   private int pixelWidth = UNKNOWN;
   private int pixelHeight = UNKNOWN;
-  private int cuesByteSize = UNKNOWN;
+  private long cuesSizeBytes = UNKNOWN;
   private long clusterTimecodeUs = UNKNOWN;
   private long simpleBlockTimecodeUs = UNKNOWN;
   private MediaFormat format;
@@ -98,82 +105,70 @@ public final class WebmExtractor extends EbmlReader {
   private LongArray cueClusterPositions;
 
   public WebmExtractor() {
-    cueTimesUs = new LongArray();
-    cueClusterPositions = new LongArray();
+    this(new DefaultEbmlReader());
   }
 
-  /**
-   * Whether the has parsed the cues and sample format from the stream.
-   *
-   * @return True if the extractor is prepared. False otherwise.
-   */
-  public boolean isPrepared() {
-    return prepared;
+  /* package */ WebmExtractor(EbmlReader reader) {
+    this.reader = reader;
+    this.reader.setEventHandler(new InnerEbmlEventHandler());
   }
 
-  /**
-   * Consumes data from a {@link NonBlockingInputStream}.
-   *
-   * <p>If the return value is {@code false}, then a sample may have been partially read into
-   * {@code sampleHolder}. Hence the same {@link SampleHolder} instance must be passed
-   * in subsequent calls until the whole sample has been read.
-   *
-   * @param inputStream The input stream from which data should be read.
-   * @param sampleHolder A {@link SampleHolder} into which the sample should be read.
-   * @return {@code true} if a sample has been read into the sample holder, otherwise {@code false}.
-   */
-  public boolean read(NonBlockingInputStream inputStream, SampleHolder sampleHolder) {
-    tempSampleHolder = sampleHolder;
-    sampleRead = false;
-    super.read(inputStream);
-    tempSampleHolder = null;
-    return sampleRead;
+  @Override
+  public int read(NonBlockingInputStream inputStream, SampleHolder sampleHolder) {
+    this.sampleHolder = sampleHolder;
+    this.readResults = 0;
+    while ((readResults & READ_TERMINATING_RESULTS) == 0) {
+      int ebmlReadResult = reader.read(inputStream);
+      if (ebmlReadResult == EbmlReader.READ_RESULT_NEED_MORE_DATA) {
+        readResults |= WebmExtractor.RESULT_NEED_MORE_DATA;
+      } else if (ebmlReadResult == EbmlReader.READ_RESULT_END_OF_STREAM) {
+        readResults |= WebmExtractor.RESULT_END_OF_STREAM;
+      }
+    }
+    this.sampleHolder = null;
+    return readResults;
   }
 
-  /**
-   * Seeks to a position before or equal to the requested time.
-   *
-   * @param seekTimeUs The desired seek time in microseconds.
-   * @param allowNoop Allow the seek operation to do nothing if the seek time is in the current
-   *     segment, is equal to or greater than the time of the current sample, and if there does not
-   *     exist a sync frame between these two times.
-   * @return True if the operation resulted in a change of state. False if it was a no-op.
-   */
+  @Override
   public boolean seekTo(long seekTimeUs, boolean allowNoop) {
-    checkPrepared();
-    if (allowNoop && simpleBlockTimecodeUs != UNKNOWN && seekTimeUs >= simpleBlockTimecodeUs) {
-      final int clusterIndex = Arrays.binarySearch(cues.timesUs, clusterTimecodeUs);
+    if (allowNoop
+        && cues != null
+        && clusterTimecodeUs != UNKNOWN
+        && simpleBlockTimecodeUs != UNKNOWN
+        && seekTimeUs >= simpleBlockTimecodeUs) {
+      int clusterIndex = Arrays.binarySearch(cues.timesUs, clusterTimecodeUs);
       if (clusterIndex >= 0 && seekTimeUs < clusterTimecodeUs + cues.durationsUs[clusterIndex]) {
         return false;
       }
     }
-    reset();
+    clusterTimecodeUs = UNKNOWN;
+    simpleBlockTimecodeUs = UNKNOWN;
+    reader.reset();
     return true;
   }
 
-  /**
-   * Returns the cues for the media stream.
-   *
-   * @return The cues in the form of a {@link SegmentIndex}, or null if the extractor is not yet
-   *     prepared.
-   */
-  public SegmentIndex getCues() {
-    checkPrepared();
+  @Override
+  public SegmentIndex getIndex() {
     return cues;
   }
 
-  /**
-   * Returns the format of the samples contained within the media stream.
-   *
-   * @return The sample media format, or null if the extracted is not yet prepared.
-   */
+  @Override
+  public boolean hasRelativeIndexOffsets() {
+    return false;
+  }
+
+  @Override
   public MediaFormat getFormat() {
-    checkPrepared();
     return format;
   }
 
   @Override
-  protected int getElementType(int id) {
+  public Map<UUID, byte[]> getPsshInfo() {
+    // TODO: Parse pssh data from Webm streams.
+    return null;
+  }
+
+  /* package */ int getElementType(int id) {
     switch (id) {
       case ID_EBML:
       case ID_SEGMENT:
@@ -207,47 +202,52 @@ public final class WebmExtractor extends EbmlReader {
     }
   }
 
-  @Override
-  protected boolean onMasterElementStart(
-      int id, long elementOffset, int headerSize, int contentsSize) {
+  /* package */ boolean onMasterElementStart(
+      int id, long elementOffsetBytes, int headerSizeBytes, long contentsSizeBytes) {
     switch (id) {
       case ID_SEGMENT:
-        if (segmentStartPosition != UNKNOWN || segmentEndPosition != UNKNOWN) {
+        if (segmentStartOffsetBytes != UNKNOWN || segmentEndOffsetBytes != UNKNOWN) {
           throw new IllegalStateException("Multiple Segment elements not supported");
         }
-        segmentStartPosition = elementOffset + headerSize;
-        segmentEndPosition = elementOffset + headerSize + contentsSize;
+        segmentStartOffsetBytes = elementOffsetBytes + headerSizeBytes;
+        segmentEndOffsetBytes = elementOffsetBytes + headerSizeBytes + contentsSizeBytes;
         break;
       case ID_CUES:
-        cuesByteSize = headerSize + contentsSize;
+        cuesSizeBytes = headerSizeBytes + contentsSizeBytes;
+        cueTimesUs = new LongArray();
+        cueClusterPositions = new LongArray();
         break;
+      default:
+        // pass
     }
     return true;
   }
 
-  @Override
-  protected boolean onMasterElementEnd(int id) {
+  /* package */ boolean onMasterElementEnd(int id) {
     switch (id) {
       case ID_CUES:
-        finishPreparing();
+        buildCues();
         return false;
+      case ID_VIDEO:
+        buildFormat();
+        return true;
+      default:
+        return true;
     }
-    return true;
   }
 
-  @Override
-  protected boolean onIntegerElement(int id, long value) {
+  /* package */ boolean onIntegerElement(int id, long value) {
     switch (id) {
       case ID_EBML_READ_VERSION:
         // Validate that EBMLReadVersion is supported. This extractor only supports v1.
         if (value != 1) {
-          throw new IllegalStateException("EBMLReadVersion " + value + " not supported");
+          throw new IllegalArgumentException("EBMLReadVersion " + value + " not supported");
         }
         break;
       case ID_DOC_TYPE_READ_VERSION:
         // Validate that DocTypeReadVersion is supported. This extractor only supports up to v2.
         if (value < 1 || value > 2) {
-          throw new IllegalStateException("DocTypeReadVersion " + value + " not supported");
+          throw new IllegalArgumentException("DocTypeReadVersion " + value + " not supported");
         }
         break;
       case ID_TIMECODE_SCALE:
@@ -268,139 +268,209 @@ public final class WebmExtractor extends EbmlReader {
       case ID_TIME_CODE:
         clusterTimecodeUs = scaleTimecodeToUs(value);
         break;
+      default:
+        // pass
     }
     return true;
   }
 
-  @Override
-  protected boolean onFloatElement(int id, double value) {
-    switch (id) {
-      case ID_DURATION:
-        durationUs = scaleTimecodeToUs(value);
-        break;
+  /* package */ boolean onFloatElement(int id, double value) {
+    if (id == ID_DURATION) {
+      durationUs = scaleTimecodeToUs((long) value);
     }
     return true;
   }
 
-  @Override
-  protected boolean onStringElement(int id, String value) {
+  /* package */ boolean onStringElement(int id, String value) {
     switch (id) {
       case ID_DOC_TYPE:
         // Validate that DocType is supported. This extractor only supports "webm".
         if (!DOC_TYPE_WEBM.equals(value)) {
-          throw new IllegalStateException("DocType " + value + " not supported");
+          throw new IllegalArgumentException("DocType " + value + " not supported");
         }
         break;
       case ID_CODEC_ID:
         // Validate that CodecID is supported. This extractor only supports "V_VP9".
         if (!CODEC_ID_VP9.equals(value)) {
-          throw new IllegalStateException("CodecID " + value + " not supported");
+          throw new IllegalArgumentException("CodecID " + value + " not supported");
         }
         break;
+      default:
+        // pass
     }
     return true;
   }
 
-  @Override
-  protected boolean onBinaryElement(NonBlockingInputStream inputStream,
-      int id, long elementOffset, int headerSize, int contentsSize) {
-    switch (id) {
-      case ID_SIMPLE_BLOCK:
-        // Please refer to http://www.matroska.org/technical/specs/index.html#simpleblock_structure
-        // for info about how data is organized in a SimpleBlock element.
+  /* package */ boolean onBinaryElement(
+      int id, long elementOffsetBytes, int headerSizeBytes, int contentsSizeBytes,
+      NonBlockingInputStream inputStream) {
+    if (id == ID_SIMPLE_BLOCK) {
+      // Please refer to http://www.matroska.org/technical/specs/index.html#simpleblock_structure
+      // for info about how data is organized in a SimpleBlock element.
 
-        // Value of trackNumber is not used but needs to be read.
-        readVarint(inputStream);
-
-        // Next three bytes have timecode and flags.
-        readBytes(inputStream, simpleBlockTimecodeAndFlags, 3);
-
-        // First two bytes of the three are the relative timecode.
-        final int timecode =
-            (simpleBlockTimecodeAndFlags[0] << 8) | (simpleBlockTimecodeAndFlags[1] & 0xff);
-        final long timecodeUs = scaleTimecodeToUs(timecode);
-
-        // Last byte of the three has some flags and the lacing value.
-        final boolean keyframe = (simpleBlockTimecodeAndFlags[2] & 0x80) == 0x80;
-        final boolean invisible = (simpleBlockTimecodeAndFlags[2] & 0x08) == 0x08;
-        final int lacing = (simpleBlockTimecodeAndFlags[2] & 0x06) >> 1;
-        //final boolean discardable = (simpleBlockTimecodeAndFlags[2] & 0x01) == 0x01; // Not used.
-
-        // Validate lacing and set info into sample holder.
-        switch (lacing) {
-          case LACING_NONE:
-            final long elementEndOffset = elementOffset + headerSize + contentsSize;
-            simpleBlockTimecodeUs = clusterTimecodeUs + timecodeUs;
-            tempSampleHolder.flags = keyframe ? MediaExtractor.SAMPLE_FLAG_SYNC : 0;
-            tempSampleHolder.decodeOnly = invisible;
-            tempSampleHolder.timeUs = clusterTimecodeUs + timecodeUs;
-            tempSampleHolder.size = (int) (elementEndOffset - getBytesRead());
-            break;
-          case LACING_EBML:
-          case LACING_FIXED:
-          case LACING_XIPH:
-          default:
-            throw new IllegalStateException("Lacing mode " + lacing + " not supported");
-        }
-
-        // Read video data into sample holder.
-        readBytes(inputStream, tempSampleHolder.data, tempSampleHolder.size);
-        sampleRead = true;
+      // If we don't have a sample holder then don't consume the data.
+      if (sampleHolder == null) {
+        readResults |= RESULT_NEED_SAMPLE_HOLDER;
         return false;
-      default:
-        skipBytes(inputStream, contentsSize);
+      }
+
+      // Value of trackNumber is not used but needs to be read.
+      reader.readVarint(inputStream);
+
+      // Next three bytes have timecode and flags.
+      reader.readBytes(inputStream, simpleBlockTimecodeAndFlags, 3);
+
+      // First two bytes of the three are the relative timecode.
+      int timecode =
+          (simpleBlockTimecodeAndFlags[0] << 8) | (simpleBlockTimecodeAndFlags[1] & 0xff);
+      long timecodeUs = scaleTimecodeToUs(timecode);
+
+      // Last byte of the three has some flags and the lacing value.
+      boolean keyframe = (simpleBlockTimecodeAndFlags[2] & 0x80) == 0x80;
+      boolean invisible = (simpleBlockTimecodeAndFlags[2] & 0x08) == 0x08;
+      int lacing = (simpleBlockTimecodeAndFlags[2] & 0x06) >> 1;
+
+      // Validate lacing and set info into sample holder.
+      switch (lacing) {
+        case LACING_NONE:
+          long elementEndOffsetBytes = elementOffsetBytes + headerSizeBytes + contentsSizeBytes;
+          simpleBlockTimecodeUs = clusterTimecodeUs + timecodeUs;
+          sampleHolder.flags = keyframe ? MediaExtractor.SAMPLE_FLAG_SYNC : 0;
+          sampleHolder.decodeOnly = invisible;
+          sampleHolder.timeUs = clusterTimecodeUs + timecodeUs;
+          sampleHolder.size = (int) (elementEndOffsetBytes - reader.getBytesRead());
+          break;
+        case LACING_EBML:
+        case LACING_FIXED:
+        case LACING_XIPH:
+        default:
+          throw new IllegalStateException("Lacing mode " + lacing + " not supported");
+      }
+
+      ByteBuffer outputData = sampleHolder.data;
+      if (sampleHolder.allowDataBufferReplacement
+          && (sampleHolder.data == null || sampleHolder.data.capacity() < sampleHolder.size)) {
+        outputData = ByteBuffer.allocate(sampleHolder.size);
+        sampleHolder.data = outputData;
+      }
+
+      if (outputData == null) {
+        reader.skipBytes(inputStream, sampleHolder.size);
+        sampleHolder.size = 0;
+      } else {
+        reader.readBytes(inputStream, outputData, sampleHolder.size);
+      }
+      readResults |= RESULT_READ_SAMPLE;
     }
     return true;
   }
 
   private long scaleTimecodeToUs(long unscaledTimecode) {
-    return (unscaledTimecode * timecodeScale) / 1000L;
+    return TimeUnit.NANOSECONDS.toMicros(unscaledTimecode * timecodeScale);
   }
 
-  private long scaleTimecodeToUs(double unscaledTimecode) {
-    return (long) ((unscaledTimecode * timecodeScale) / 1000.0);
-  }
-
-  private void checkPrepared() {
-    if (!prepared) {
-      throw new IllegalStateException("Parser not yet prepared");
+  /**
+   * Build a video {@link MediaFormat} containing recently gathered Video information, if needed.
+   *
+   * <p>Replaces the previous {@link #format} only if video width/height have changed.
+   * {@link #format} is guaranteed to not be null after calling this method. In
+   * the event that it can't be built, an {@link IllegalStateException} will be thrown.
+   */
+  private void buildFormat() {
+    if (pixelWidth != UNKNOWN && pixelHeight != UNKNOWN
+        && (format == null || format.width != pixelWidth || format.height != pixelHeight)) {
+      format = MediaFormat.createVideoFormat(
+          MimeTypes.VIDEO_VP9, MediaFormat.NO_VALUE, pixelWidth, pixelHeight, null);
+      readResults |= RESULT_READ_INIT;
+    } else if (format == null) {
+      throw new IllegalStateException("Unable to build format");
     }
   }
 
-  private void finishPreparing() {
-    if (prepared
-        || segmentStartPosition == UNKNOWN || segmentEndPosition == UNKNOWN
-        || durationUs == UNKNOWN
-        || pixelWidth == UNKNOWN || pixelHeight == UNKNOWN
-        || cuesByteSize == UNKNOWN
+  /**
+   * Build a {@link SegmentIndex} containing recently gathered Cues information.
+   *
+   * <p>{@link #cues} is guaranteed to not be null after calling this method. In
+   * the event that it can't be built, an {@link IllegalStateException} will be thrown.
+   */
+  private void buildCues() {
+    if (segmentStartOffsetBytes == UNKNOWN) {
+      throw new IllegalStateException("Segment start/end offsets unknown");
+    } else if (durationUs == UNKNOWN) {
+      throw new IllegalStateException("Duration unknown");
+    } else if (cuesSizeBytes == UNKNOWN) {
+      throw new IllegalStateException("Cues size unknown");
+    } else if (cueTimesUs == null || cueClusterPositions == null
         || cueTimesUs.size() == 0 || cueTimesUs.size() != cueClusterPositions.size()) {
-      throw new IllegalStateException("Incorrect state in finishPreparing()");
+      throw new IllegalStateException("Invalid/missing cue points");
     }
-
-    format = MediaFormat.createVideoFormat(MimeTypes.VIDEO_VP9, MediaFormat.NO_VALUE, pixelWidth,
-        pixelHeight, null);
-
-    final int cuePointsSize = cueTimesUs.size();
-    final int sizeBytes = cuesByteSize;
-    final int[] sizes = new int[cuePointsSize];
-    final long[] offsets = new long[cuePointsSize];
-    final long[] durationsUs = new long[cuePointsSize];
-    final long[] timesUs = new long[cuePointsSize];
+    int cuePointsSize = cueTimesUs.size();
+    int[] sizes = new int[cuePointsSize];
+    long[] offsets = new long[cuePointsSize];
+    long[] durationsUs = new long[cuePointsSize];
+    long[] timesUs = new long[cuePointsSize];
     for (int i = 0; i < cuePointsSize; i++) {
       timesUs[i] = cueTimesUs.get(i);
-      offsets[i] = segmentStartPosition + cueClusterPositions.get(i);
+      offsets[i] = segmentStartOffsetBytes + cueClusterPositions.get(i);
     }
     for (int i = 0; i < cuePointsSize - 1; i++) {
       sizes[i] = (int) (offsets[i + 1] - offsets[i]);
       durationsUs[i] = timesUs[i + 1] - timesUs[i];
     }
-    sizes[cuePointsSize - 1] = (int) (segmentEndPosition - offsets[cuePointsSize - 1]);
+    sizes[cuePointsSize - 1] = (int) (segmentEndOffsetBytes - offsets[cuePointsSize - 1]);
     durationsUs[cuePointsSize - 1] = durationUs - timesUs[cuePointsSize - 1];
-    cues = new SegmentIndex(sizeBytes, sizes, offsets, durationsUs, timesUs);
+    cues = new SegmentIndex((int) cuesSizeBytes, sizes, offsets, durationsUs, timesUs);
     cueTimesUs = null;
     cueClusterPositions = null;
+    readResults |= RESULT_READ_INDEX;
+  }
 
-    prepared = true;
+  /**
+   * Passes events through to {@link WebmExtractor} as
+   * callbacks from {@link EbmlReader} are received.
+   */
+  private final class InnerEbmlEventHandler implements EbmlEventHandler {
+
+    @Override
+    public int getElementType(int id) {
+      return WebmExtractor.this.getElementType(id);
+    }
+
+    @Override
+    public void onMasterElementStart(
+        int id, long elementOffsetBytes, int headerSizeBytes, long contentsSizeBytes) {
+      WebmExtractor.this.onMasterElementStart(
+          id, elementOffsetBytes, headerSizeBytes, contentsSizeBytes);
+    }
+
+    @Override
+    public void onMasterElementEnd(int id) {
+      WebmExtractor.this.onMasterElementEnd(id);
+    }
+
+    @Override
+    public void onIntegerElement(int id, long value) {
+      WebmExtractor.this.onIntegerElement(id, value);
+    }
+
+    @Override
+    public void onFloatElement(int id, double value) {
+      WebmExtractor.this.onFloatElement(id, value);
+    }
+
+    @Override
+    public void onStringElement(int id, String value) {
+      WebmExtractor.this.onStringElement(id, value);
+    }
+
+    @Override
+    public boolean onBinaryElement(
+        int id, long elementOffsetBytes, int headerSizeBytes, int contentsSizeBytes,
+        NonBlockingInputStream inputStream) {
+      return WebmExtractor.this.onBinaryElement(
+          id, elementOffsetBytes, headerSizeBytes, contentsSizeBytes, inputStream);
+    }
+
   }
 
 }
