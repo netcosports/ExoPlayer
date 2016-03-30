@@ -16,20 +16,20 @@
 
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.google.android.exoplayer.demo"
-    android:versionCode="1013"
-    android:versionName="1.0.13"
+    android:versionCode="1506"
+    android:versionName="1.5.6"
     android:theme="@style/RootTheme">
 
   <uses-permission android:name="android.permission.INTERNET"/>
-  <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
-  <uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/>
-  <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"/>
+  <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>
 
-  <uses-sdk android:minSdkVersion="16" android:targetSdkVersion="19"/>
+  <uses-sdk android:minSdkVersion="16" android:targetSdkVersion="23"/>
 
   <application
       android:label="@string/application_name"
-      android:allowBackup="true">
+      android:icon="@drawable/ic_launcher"
+      android:largeHeap="true"
+      android:allowBackup="false">
 
     <activity android:name="com.google.android.exoplayer.demo.SampleChooserActivity"
         android:configChanges="keyboardHidden"
@@ -40,15 +40,21 @@
       </intent-filter>
     </activity>
 
-    <activity android:name="com.google.android.exoplayer.demo.simple.SimplePlayerActivity"
-        android:configChanges="keyboardHidden|orientation|screenSize"
+    <activity android:name="com.google.android.exoplayer.demo.PlayerActivity"
+        android:configChanges="keyboard|keyboardHidden|orientation|screenSize"
+        android:launchMode="singleInstance"
         android:label="@string/application_name"
-        android:theme="@style/PlayerTheme"/>
-
-    <activity android:name="com.google.android.exoplayer.demo.full.FullPlayerActivity"
-        android:configChanges="keyboardHidden|orientation|screenSize"
-        android:label="@string/application_name"
-        android:theme="@style/PlayerTheme"/>
+        android:theme="@style/PlayerTheme">
+      <intent-filter>
+        <action android:name="com.google.android.exoplayer.demo.action.VIEW"/>
+        <category android:name="android.intent.category.DEFAULT"/>
+        <data android:scheme="http"/>
+        <data android:scheme="https"/>
+        <data android:scheme="content"/>
+        <data android:scheme="asset"/>
+        <data android:scheme="file"/>
+      </intent-filter>
+    </activity>
 
   </application>
 

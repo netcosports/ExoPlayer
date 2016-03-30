@@ -16,215 +16,253 @@
 package com.google.android.exoplayer.text;
 
 import com.google.android.exoplayer.ExoPlaybackException;
+import com.google.android.exoplayer.MediaFormat;
 import com.google.android.exoplayer.MediaFormatHolder;
 import com.google.android.exoplayer.SampleHolder;
 import com.google.android.exoplayer.SampleSource;
+import com.google.android.exoplayer.SampleSourceTrackRenderer;
 import com.google.android.exoplayer.TrackRenderer;
-import com.google.android.exoplayer.dash.mpd.AdaptationSet;
 import com.google.android.exoplayer.util.Assertions;
-import com.google.android.exoplayer.util.VerboseLogUtil;
 
 import android.annotation.TargetApi;
 import android.os.Handler;
 import android.os.Handler.Callback;
+import android.os.HandlerThread;
 import android.os.Looper;
 import android.os.Message;
-import android.util.Log;
 
-import java.io.ByteArrayInputStream;
 import java.io.IOException;
-import java.io.InputStream;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 
 /**
- * A {@link TrackRenderer} for textual subtitles. The actual rendering of each line of text to a
- * suitable output (e.g. the display) is delegated to a {@link TextRenderer}.
+ * A {@link TrackRenderer} for subtitles. Text is parsed from sample data using a
+ * {@link SubtitleParser}. The actual rendering of each line of text is delegated to a
+ * {@link TextRenderer}.
+ * <p>
+ * If no {@link SubtitleParser} instances are passed to the constructor, the subtitle type will be
+ * detected automatically for the following supported formats:
+ *
+ * <ul>
+ * <li>WebVTT ({@link com.google.android.exoplayer.text.webvtt.WebvttParser})</li>
+ * <li>TTML
+ * ({@link com.google.android.exoplayer.text.ttml.TtmlParser})</li>
+ * <li>SubRip
+ * ({@link com.google.android.exoplayer.text.subrip.SubripParser})</li>
+ * <li>TX3G
+ * ({@link com.google.android.exoplayer.text.tx3g.Tx3gParser})</li>
+ * </ul>
+ *
+ * <p>To override the default parsers, pass one or more {@link SubtitleParser} instances to the
+ * constructor. The first {@link SubtitleParser} that returns {@code true} from
+ * {@link SubtitleParser#canParse(String)} will be used.
  */
 @TargetApi(16)
-public class TextTrackRenderer extends TrackRenderer implements Callback {
-
-  /**
-   * An interface for components that render text.
-   */
-  public interface TextRenderer {
-
-    /**
-     * Invoked each time there is a change in the text to be rendered.
-     *
-     * @param text The text to render, or null if no text is to be rendered.
-     */
-    void onText(String text);
-
-  }
-
-  private static final String TAG = "TextTrackRenderer";
+public final class TextTrackRenderer extends SampleSourceTrackRenderer implements Callback {
 
   private static final int MSG_UPDATE_OVERLAY = 0;
 
+  /**
+   * Default parser classes in priority order. They are referred to indirectly so that it is
+   * possible to remove unused parsers.
+   */
+  private static final List<Class<? extends SubtitleParser>> DEFAULT_PARSER_CLASSES;
+  static {
+    DEFAULT_PARSER_CLASSES = new ArrayList<>();
+    // Load parsers using reflection so that they can be deleted cleanly.
+    // Class.forName(<class name>) appears for each parser so that automated tools like proguard
+    // can detect the use of reflection (see http://proguard.sourceforge.net/FAQ.html#forname).
+    try {
+      DEFAULT_PARSER_CLASSES.add(
+          Class.forName("com.google.android.exoplayer.text.webvtt.WebvttParser")
+              .asSubclass(SubtitleParser.class));
+    } catch (ClassNotFoundException e) {
+      // Parser not found.
+    }
+    try {
+      DEFAULT_PARSER_CLASSES.add(
+          Class.forName("com.google.android.exoplayer.text.ttml.TtmlParser")
+              .asSubclass(SubtitleParser.class));
+    } catch (ClassNotFoundException e) {
+      // Parser not found.
+    }
+    try {
+      DEFAULT_PARSER_CLASSES.add(
+          Class.forName("com.google.android.exoplayer.text.webvtt.Mp4WebvttParser")
+              .asSubclass(SubtitleParser.class));
+    } catch (ClassNotFoundException e) {
+      // Parser not found.
+    }
+    try {
+      DEFAULT_PARSER_CLASSES.add(
+          Class.forName("com.google.android.exoplayer.text.subrip.SubripParser")
+              .asSubclass(SubtitleParser.class));
+    } catch (ClassNotFoundException e) {
+      // Parser not found.
+    }
+    try {
+      DEFAULT_PARSER_CLASSES.add(
+          Class.forName("com.google.android.exoplayer.text.tx3g.Tx3gParser")
+              .asSubclass(SubtitleParser.class));
+    } catch (ClassNotFoundException e) {
+      // Parser not found.
+    }
+  }
+
   private final Handler textRendererHandler;
   private final TextRenderer textRenderer;
-  private final SampleSource source;
-  private final SampleHolder sampleHolder;
   private final MediaFormatHolder formatHolder;
-  private final SubtitleParser subtitleParser;
+  private final SubtitleParser[] subtitleParsers;
 
-  private int trackIndex;
-
-  private long currentPositionUs;
+  private int parserIndex;
   private boolean inputStreamEnded;
-
-  private Subtitle subtitle;
+  private PlayableSubtitle subtitle;
+  private PlayableSubtitle nextSubtitle;
+  private SubtitleParserHelper parserHelper;
+  private HandlerThread parserThread;
   private int nextSubtitleEventIndex;
-  private boolean textRendererNeedsUpdate;
 
   /**
    * @param source A source from which samples containing subtitle data can be read.
-   * @param subtitleParser A subtitle parser that will parse Subtitle objects from the source.
    * @param textRenderer The text renderer.
    * @param textRendererLooper The looper associated with the thread on which textRenderer should be
    *     invoked. If the renderer makes use of standard Android UI components, then this should
    *     normally be the looper associated with the applications' main thread, which can be
    *     obtained using {@link android.app.Activity#getMainLooper()}. Null may be passed if the
    *     renderer should be invoked directly on the player's internal rendering thread.
+   * @param subtitleParsers {@link SubtitleParser}s to parse text samples, in order of decreasing
+   *     priority. If omitted, the default parsers will be used.
    */
-  public TextTrackRenderer(SampleSource source, SubtitleParser subtitleParser,
-      TextRenderer textRenderer, Looper textRendererLooper) {
-    this.source = Assertions.checkNotNull(source);
-    this.subtitleParser = Assertions.checkNotNull(subtitleParser);
+  public TextTrackRenderer(SampleSource source, TextRenderer textRenderer,
+      Looper textRendererLooper, SubtitleParser... subtitleParsers) {
+    this(new SampleSource[] {source}, textRenderer, textRendererLooper, subtitleParsers);
+  }
+
+  /**
+   * @param sources Sources from which samples containing subtitle data can be read.
+   * @param textRenderer The text renderer.
+   * @param textRendererLooper The looper associated with the thread on which textRenderer should be
+   *     invoked. If the renderer makes use of standard Android UI components, then this should
+   *     normally be the looper associated with the applications' main thread, which can be
+   *     obtained using {@link android.app.Activity#getMainLooper()}. Null may be passed if the
+   *     renderer should be invoked directly on the player's internal rendering thread.
+   * @param subtitleParsers {@link SubtitleParser}s to parse text samples, in order of decreasing
+   *     priority. If omitted, the default parsers will be used.
+   */
+  public TextTrackRenderer(SampleSource[] sources, TextRenderer textRenderer,
+      Looper textRendererLooper, SubtitleParser... subtitleParsers) {
+    super(sources);
     this.textRenderer = Assertions.checkNotNull(textRenderer);
-    this.textRendererHandler = textRendererLooper == null ? null : new Handler(textRendererLooper,
-        this);
+    this.textRendererHandler = textRendererLooper == null ? null
+        : new Handler(textRendererLooper, this);
+    if (subtitleParsers == null || subtitleParsers.length == 0) {
+      subtitleParsers = new SubtitleParser[DEFAULT_PARSER_CLASSES.size()];
+      for (int i = 0; i < subtitleParsers.length; i++) {
+        try {
+          subtitleParsers[i] = DEFAULT_PARSER_CLASSES.get(i).newInstance();
+        } catch (InstantiationException e) {
+          throw new IllegalStateException("Unexpected error creating default parser", e);
+        } catch (IllegalAccessException e) {
+          throw new IllegalStateException("Unexpected error creating default parser", e);
+        }
+      }
+    }
+    this.subtitleParsers = subtitleParsers;
     formatHolder = new MediaFormatHolder();
-    sampleHolder = new SampleHolder(true);
   }
 
   @Override
-  protected int doPrepare() throws ExoPlaybackException {
-    try {
-      boolean sourcePrepared = source.prepare();
-      if (!sourcePrepared) {
-        return TrackRenderer.STATE_UNPREPARED;
-      }
-    } catch (IOException e) {
-      throw new ExoPlaybackException(e);
-    }
-    for (int i = 0; i < source.getTrackCount(); i++) {
-      if (subtitleParser.canParse(source.getTrackInfo(i).mimeType)) {
-        trackIndex = i;
-        return TrackRenderer.STATE_PREPARED;
-      }
-    }
-    return TrackRenderer.STATE_IGNORE;
+  protected boolean handlesTrack(MediaFormat mediaFormat) {
+    return getParserIndex(mediaFormat) != -1;
   }
 
   @Override
-  protected void onEnabled(long timeUs, boolean joining) {
-    source.enable(trackIndex, timeUs);
-    seekToInternal(timeUs);
+  protected void onEnabled(int track, long positionUs, boolean joining)
+      throws ExoPlaybackException {
+    super.onEnabled(track, positionUs, joining);
+    parserIndex = getParserIndex(getFormat(track));
+    parserThread = new HandlerThread("textParser");
+    parserThread.start();
+    parserHelper = new SubtitleParserHelper(parserThread.getLooper(), subtitleParsers[parserIndex]);
   }
 
   @Override
-  protected void seekTo(long timeUs) {
-    source.seekToUs(timeUs);
-    seekToInternal(timeUs);
-  }
-
-  private void seekToInternal(long timeUs) {
+  protected void onDiscontinuity(long positionUs) {
     inputStreamEnded = false;
-    currentPositionUs = timeUs;
-    source.seekToUs(timeUs);
-    if (subtitle != null && (timeUs < subtitle.getStartTime()
-        || subtitle.getLastEventTime() <= timeUs)) {
-      subtitle = null;
-    }
-    resetSampleData();
+    subtitle = null;
+    nextSubtitle = null;
     clearTextRenderer();
-    syncNextEventIndex(timeUs);
-    textRendererNeedsUpdate = subtitle != null;
+    if (parserHelper != null) {
+      parserHelper.flush();
+    }
   }
 
   @Override
-  protected void doSomeWork(long timeUs) throws ExoPlaybackException {
-    try {
-      source.continueBuffering(timeUs);
-    } catch (IOException e) {
-      throw new ExoPlaybackException(e);
+  protected void doSomeWork(long positionUs, long elapsedRealtimeUs, boolean sourceIsReady)
+      throws ExoPlaybackException {
+    if (nextSubtitle == null) {
+      try {
+        nextSubtitle = parserHelper.getAndClearResult();
+      } catch (IOException e) {
+        throw new ExoPlaybackException(e);
+      }
     }
 
-    currentPositionUs = timeUs;
+    if (getState() != TrackRenderer.STATE_STARTED) {
+      return;
+    }
 
-    // We're iterating through the events in a subtitle. Set textRendererNeedsUpdate if we advance
-    // to the next event.
+    boolean textRendererNeedsUpdate = false;
+    long subtitleNextEventTimeUs = Long.MAX_VALUE;
     if (subtitle != null) {
-      long nextEventTimeUs = getNextEventTime();
-      while (nextEventTimeUs <= timeUs) {
+      // We're iterating through the events in a subtitle. Set textRendererNeedsUpdate if we
+      // advance to the next event.
+      subtitleNextEventTimeUs = getNextEventTime();
+      while (subtitleNextEventTimeUs <= positionUs) {
         nextSubtitleEventIndex++;
-        nextEventTimeUs = getNextEventTime();
+        subtitleNextEventTimeUs = getNextEventTime();
         textRendererNeedsUpdate = true;
       }
-      if (nextEventTimeUs == Long.MAX_VALUE) {
-        // We've finished processing the subtitle.
-        subtitle = null;
-      }
     }
 
-    // We don't have a subtitle. Try and read the next one from the source, and if we succeed then
-    // sync and set textRendererNeedsUpdate.
-    if (subtitle == null) {
-      boolean resetSampleHolder = false;
-      try {
-        int result = source.readData(trackIndex, timeUs, formatHolder, sampleHolder, false);
-        if (result == SampleSource.SAMPLE_READ) {
-          resetSampleHolder = true;
-          InputStream subtitleInputStream =
-              new ByteArrayInputStream(sampleHolder.data.array(), 0, sampleHolder.size);
-          subtitle = subtitleParser.parse(subtitleInputStream, "UTF-8", sampleHolder.timeUs);
-          syncNextEventIndex(timeUs);
-          textRendererNeedsUpdate = true;
-        } else if (result == SampleSource.END_OF_STREAM) {
-          inputStreamEnded = true;
-        }
-      } catch (IOException e) {
-        resetSampleHolder = true;
-        throw new ExoPlaybackException(e);
-      } finally {
-        if (resetSampleHolder) {
-          resetSampleData();
-        }
-      }
+    if (nextSubtitle != null && nextSubtitle.startTimeUs <= positionUs) {
+      // Advance to the next subtitle. Sync the next event index and trigger an update.
+      subtitle = nextSubtitle;
+      nextSubtitle = null;
+      nextSubtitleEventIndex = subtitle.getNextEventTimeIndex(positionUs);
+      textRendererNeedsUpdate = true;
     }
 
-    // Update the text renderer if we're both playing and textRendererNeedsUpdate is set.
-    if (textRendererNeedsUpdate && getState() == TrackRenderer.STATE_STARTED) {
-      textRendererNeedsUpdate = false;
-      if (subtitle == null) {
-        clearTextRenderer();
-      } else {
-        updateTextRenderer(timeUs);
+    if (textRendererNeedsUpdate) {
+      // textRendererNeedsUpdate is set and we're playing. Update the renderer.
+      updateTextRenderer(subtitle.getCues(positionUs));
+    }
+
+    if (!inputStreamEnded && nextSubtitle == null && !parserHelper.isParsing()) {
+      // Try and read the next subtitle from the source.
+      SampleHolder sampleHolder = parserHelper.getSampleHolder();
+      sampleHolder.clearData();
+      int result = readSource(positionUs, formatHolder, sampleHolder);
+      if (result == SampleSource.FORMAT_READ) {
+        parserHelper.setFormat(formatHolder.format);
+      } else if (result == SampleSource.SAMPLE_READ) {
+        parserHelper.startParseOperation();
+      } else if (result == SampleSource.END_OF_STREAM) {
+        inputStreamEnded = true;
       }
     }
   }
 
   @Override
-  protected void onDisabled() {
-    source.disable(trackIndex);
+  protected void onDisabled() throws ExoPlaybackException {
     subtitle = null;
-    resetSampleData();
+    nextSubtitle = null;
+    parserThread.quit();
+    parserThread = null;
+    parserHelper = null;
     clearTextRenderer();
-  }
-
-  @Override
-  protected void onReleased() {
-    source.release();
-  }
-
-  @Override
-  protected long getCurrentPositionUs() {
-    return currentPositionUs;
-  }
-
-  @Override
-  protected long getDurationUs() {
-    return source.getTrackInfo(trackIndex).durationUs;
+    super.onDisabled();
   }
 
   @Override
@@ -235,18 +273,14 @@ public class TextTrackRenderer extends TrackRenderer implements Callback {
 
   @Override
   protected boolean isEnded() {
-    return inputStreamEnded && subtitle == null;
+    return inputStreamEnded && (subtitle == null || getNextEventTime() == Long.MAX_VALUE);
   }
 
   @Override
   protected boolean isReady() {
     // Don't block playback whilst subtitles are loading.
-    // Note: To change this behavior, it will be necessary to consider [redacted].
+    // Note: To change this behavior, it will be necessary to consider [Internal: b/12949941].
     return true;
-  }
-
-  private void syncNextEventIndex(long timeUs) {
-    nextSubtitleEventIndex = subtitle == null ? -1 : subtitle.getNextEventTimeIndex(timeUs);
   }
 
   private long getNextEventTime() {
@@ -255,49 +289,40 @@ public class TextTrackRenderer extends TrackRenderer implements Callback {
         : (subtitle.getEventTime(nextSubtitleEventIndex));
   }
 
-  private void resetSampleData() {
-    if (sampleHolder.data != null) {
-      sampleHolder.data.position(0);
-    }
-  }
-
-  private void updateTextRenderer(long timeUs) {
-    String text = subtitle.getText(timeUs);
-    log("updateTextRenderer; text=: " + text);
+  private void updateTextRenderer(List<Cue> cues) {
     if (textRendererHandler != null) {
-      textRendererHandler.obtainMessage(MSG_UPDATE_OVERLAY, text).sendToTarget();
+      textRendererHandler.obtainMessage(MSG_UPDATE_OVERLAY, cues).sendToTarget();
     } else {
-      invokeTextRenderer(text);
+      invokeRendererInternalCues(cues);
     }
   }
 
   private void clearTextRenderer() {
-    log("clearTextRenderer");
-    if (textRendererHandler != null) {
-      textRendererHandler.obtainMessage(MSG_UPDATE_OVERLAY, null).sendToTarget();
-    } else {
-      invokeTextRenderer(null);
-    }
+    updateTextRenderer(Collections.<Cue>emptyList());
   }
 
+  @SuppressWarnings("unchecked")
   @Override
   public boolean handleMessage(Message msg) {
     switch (msg.what) {
       case MSG_UPDATE_OVERLAY:
-        invokeTextRenderer((String) msg.obj);
+        invokeRendererInternalCues((List<Cue>) msg.obj);
         return true;
     }
     return false;
   }
 
-  private void invokeTextRenderer(String text) {
-    textRenderer.onText(text);
+  private void invokeRendererInternalCues(List<Cue> cues) {
+    textRenderer.onCues(cues);
   }
 
-  private void log(String logMessage) {
-    if (VerboseLogUtil.isTagEnabled(TAG)) {
-      Log.v(TAG, "type=" + AdaptationSet.TYPE_TEXT + ", " + logMessage);
+  private int getParserIndex(MediaFormat mediaFormat) {
+    for (int i = 0; i < subtitleParsers.length; i++) {
+      if (subtitleParsers[i].canParse(mediaFormat.mimeType)) {
+        return i;
+      }
     }
+    return -1;
   }
 
 }

@@ -26,7 +26,7 @@ public interface LoadControl {
    * Registers a loader.
    *
    * @param loader The loader being registered.
-   * @param bufferSizeContribution For controls whose {@link Allocator}s maintain a pool of memory
+   * @param bufferSizeContribution For instances whose {@link Allocator} maintains a pool of memory
    *     for the purpose of satisfying allocation requests, this is a hint indicating the loader's
    *     desired contribution to the size of the pool, in bytes.
    */
@@ -65,12 +65,11 @@ public interface LoadControl {
    *
    * @param loader The loader invoking the update.
    * @param playbackPositionUs The loader's playback position.
-   * @param nextLoadPositionUs The loader's next load position, or -1 if finished.
+   * @param nextLoadPositionUs The loader's next load position. -1 if finished, failed, or if the
+   *     next load position is not yet known.
    * @param loading Whether the loader is currently loading data.
-   * @param failed Whether the loader has failed, meaning it does not wish to load more data.
    * @return True if the loader is allowed to start its next load. False otherwise.
    */
-  boolean update(Object loader, long playbackPositionUs, long nextLoadPositionUs,
-      boolean loading, boolean failed);
+  boolean update(Object loader, long playbackPositionUs, long nextLoadPositionUs, boolean loading);
 
 }

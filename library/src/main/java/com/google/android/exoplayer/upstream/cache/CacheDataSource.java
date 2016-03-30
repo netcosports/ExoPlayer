@@ -22,11 +22,12 @@ import com.google.android.exoplayer.upstream.DataSpec;
 import com.google.android.exoplayer.upstream.FileDataSource;
 import com.google.android.exoplayer.upstream.TeeDataSource;
 import com.google.android.exoplayer.upstream.cache.CacheDataSink.CacheDataSinkException;
-import com.google.android.exoplayer.util.Assertions;
 
 import android.net.Uri;
+import android.util.Log;
 
 import java.io.IOException;
+import java.io.InterruptedIOException;
 
 /**
  * A {@link DataSource} that reads and writes a {@link Cache}. Requests are fulfilled from the cache
@@ -50,6 +51,8 @@ public final class CacheDataSource implements DataSource {
 
   }
 
+  private static final String TAG = "CacheDataSource";
+
   private final Cache cache;
   private final DataSource cacheReadDataSource;
   private final DataSource cacheWriteDataSource;
@@ -61,6 +64,7 @@ public final class CacheDataSource implements DataSource {
 
   private DataSource currentDataSource;
   private Uri uri;
+  private int flags;
   private String key;
   private long readPosition;
   private long bytesRemaining;
@@ -122,12 +126,9 @@ public final class CacheDataSource implements DataSource {
 
   @Override
   public long open(DataSpec dataSpec) throws IOException {
-    Assertions.checkState(dataSpec.uriIsFullStream);
-    // TODO: Support caching for unbounded requests. This requires storing the source length
-    // into the cache (the simplest approach is to incorporate it into each cache file's name).
-    Assertions.checkState(dataSpec.length != C.LENGTH_UNBOUNDED);
     try {
       uri = dataSpec.uri;
+      flags = dataSpec.flags;
       key = dataSpec.key;
       readPosition = dataSpec.position;
       bytesRemaining = dataSpec.length;
@@ -148,10 +149,12 @@ public final class CacheDataSource implements DataSource {
           totalCachedBytesRead += bytesRead;
         }
         readPosition += bytesRead;
-        bytesRemaining -= bytesRead;
+        if (bytesRemaining != C.LENGTH_UNBOUNDED) {
+          bytesRemaining -= bytesRead;
+        }
       } else {
         closeCurrentSource();
-        if (bytesRemaining > 0) {
+        if (bytesRemaining > 0 && bytesRemaining != C.LENGTH_UNBOUNDED) {
           openNextSource();
           return read(buffer, offset, max);
         }
@@ -180,41 +183,45 @@ public final class CacheDataSource implements DataSource {
    * opened to read from the upstream source and write into the cache.
    */
   private void openNextSource() throws IOException {
-    try {
-      DataSpec dataSpec;
-      CacheSpan span;
-      if (ignoreCache) {
-        span = null;
-      } else if (blockOnCache) {
+    DataSpec dataSpec;
+    CacheSpan span;
+    if (ignoreCache) {
+      span = null;
+    } else if (bytesRemaining == C.LENGTH_UNBOUNDED) {
+      // TODO: Support caching for unbounded requests. This requires storing the source length
+      // into the cache (the simplest approach is to incorporate it into each cache file's name).
+      Log.w(TAG, "Cache bypassed due to unbounded length.");
+      span = null;
+    } else if (blockOnCache) {
+      try {
         span = cache.startReadWrite(key, readPosition);
-      } else {
-        span = cache.startReadWriteNonBlocking(key, readPosition);
+      } catch (InterruptedException e) {
+        throw new InterruptedIOException();
       }
-      if (span == null) {
-        // The data is locked in the cache, or we're ignoring the cache. Bypass the cache and read
-        // from upstream.
-        currentDataSource = upstreamDataSource;
-        dataSpec = new DataSpec(uri, readPosition, bytesRemaining, key);
-      } else if (span.isCached) {
-        // Data is cached, read from cache.
-        Uri fileUri = Uri.fromFile(span.file);
-        long filePosition = readPosition - span.position;
-        long length = Math.min(span.length - filePosition, bytesRemaining);
-        dataSpec = new DataSpec(fileUri, readPosition, length, key, filePosition);
-        currentDataSource = cacheReadDataSource;
-      } else {
-        // Data is not cached, and data is not locked, read from upstream with cache backing.
-        lockedSpan = span;
-        long length = span.isOpenEnded() ? bytesRemaining : Math.min(span.length, bytesRemaining);
-        dataSpec = new DataSpec(uri, readPosition, length, key);
-        currentDataSource = cacheWriteDataSource != null ? cacheWriteDataSource
-            : upstreamDataSource;
-      }
-      currentDataSource.open(dataSpec);
-    } catch (InterruptedException e) {
-      // Should never happen.
-      throw new RuntimeException(e);
+    } else {
+      span = cache.startReadWriteNonBlocking(key, readPosition);
     }
+    if (span == null) {
+      // The data is locked in the cache, or we're ignoring the cache. Bypass the cache and read
+      // from upstream.
+      currentDataSource = upstreamDataSource;
+      dataSpec = new DataSpec(uri, readPosition, bytesRemaining, key, flags);
+    } else if (span.isCached) {
+      // Data is cached, read from cache.
+      Uri fileUri = Uri.fromFile(span.file);
+      long filePosition = readPosition - span.position;
+      long length = Math.min(span.length - filePosition, bytesRemaining);
+      dataSpec = new DataSpec(fileUri, readPosition, filePosition, length, key, flags);
+      currentDataSource = cacheReadDataSource;
+    } else {
+      // Data is not cached, and data is not locked, read from upstream with cache backing.
+      lockedSpan = span;
+      long length = span.isOpenEnded() ? bytesRemaining : Math.min(span.length, bytesRemaining);
+      dataSpec = new DataSpec(uri, readPosition, length, key, flags);
+      currentDataSource = cacheWriteDataSource != null ? cacheWriteDataSource
+          : upstreamDataSource;
+    }
+    currentDataSource.open(dataSpec);
   }
 
   private void closeCurrentSource() throws IOException {

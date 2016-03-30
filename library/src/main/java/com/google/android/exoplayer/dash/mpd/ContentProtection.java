@@ -15,36 +15,64 @@
  */
 package com.google.android.exoplayer.dash.mpd;
 
-import java.util.Collections;
-import java.util.Map;
+import com.google.android.exoplayer.drm.DrmInitData.SchemeInitData;
+import com.google.android.exoplayer.util.Assertions;
+import com.google.android.exoplayer.util.Util;
+
+import java.util.UUID;
 
 /**
- * Represents a ContentProtection tag in an AdaptationSet. Holds arbitrary data for various DRM
- * schemes.
+ * Represents a ContentProtection tag in an AdaptationSet.
  */
-public final class ContentProtection {
+public class ContentProtection {
 
   /**
    * Identifies the content protection scheme.
    */
   public final String schemeUriId;
+
   /**
-   * Protection scheme specific data.
+   * The UUID of the protection scheme. May be null.
    */
-  public final Map<String, String> keyedData;
+  public final UUID uuid;
+
+  /**
+   * Protection scheme specific initialization data. May be null.
+   */
+  public final SchemeInitData data;
 
   /**
    * @param schemeUriId Identifies the content protection scheme.
-   * @param keyedData Data specific to the scheme.
+   * @param uuid The UUID of the protection scheme, if known. May be null.
+   * @param data Protection scheme specific initialization data. May be null.
    */
-  public ContentProtection(String schemeUriId, Map<String, String> keyedData) {
-    this.schemeUriId = schemeUriId;
-    if (keyedData != null) {
-      this.keyedData = Collections.unmodifiableMap(keyedData);
-    } else {
-      this.keyedData = Collections.emptyMap();
+  public ContentProtection(String schemeUriId, UUID uuid, SchemeInitData data) {
+    this.schemeUriId = Assertions.checkNotNull(schemeUriId);
+    this.uuid = uuid;
+    this.data = data;
+  }
+
+  @Override
+  public boolean equals(Object obj) {
+    if (!(obj instanceof ContentProtection)) {
+      return false;
+    }
+    if (obj == this) {
+      return true;
     }
 
+    ContentProtection other = (ContentProtection) obj;
+    return schemeUriId.equals(other.schemeUriId)
+        && Util.areEqual(uuid, other.uuid)
+        && Util.areEqual(data, other.data);
+  }
+
+  @Override
+  public int hashCode() {
+    int hashCode = schemeUriId.hashCode();
+    hashCode = (37 * hashCode) + (uuid != null ? uuid.hashCode() : 0);
+    hashCode = (37 * hashCode) + (data != null ? data.hashCode() : 0);
+    return hashCode;
   }
 
 }

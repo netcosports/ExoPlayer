@@ -15,6 +15,7 @@
  */
 package com.google.android.exoplayer.dash;
 
+import com.google.android.exoplayer.C;
 import com.google.android.exoplayer.dash.mpd.RangedUri;
 
 /**
@@ -24,13 +25,22 @@ import com.google.android.exoplayer.dash.mpd.RangedUri;
  */
 public interface DashSegmentIndex {
 
+  int INDEX_UNBOUNDED = -1;
+
   /**
    * Returns the segment number of the segment containing a given media time.
+   * <p>
+   * If the given media time is outside the range of the index, then the returned segment number is
+   * clamped to {@link #getFirstSegmentNum()} (if the given media time is earlier the start of the
+   * first segment) or {@link #getLastSegmentNum(long)} (if the given media time is later then the
+   * end of the last segment).
    *
    * @param timeUs The time in microseconds.
+   * @param periodDurationUs The duration of the enclosing period in microseconds, or
+   *     {@link C#UNKNOWN_TIME_US} if the period's duration is not yet known.
    * @return The segment number of the corresponding segment.
    */
-  int getSegmentNum(long timeUs);
+  int getSegmentNum(long timeUs, long periodDurationUs);
 
   /**
    * Returns the start time of a segment.
@@ -44,9 +54,11 @@ public interface DashSegmentIndex {
    * Returns the duration of a segment.
    *
    * @param segmentNum The segment number.
+   * @param periodDurationUs The duration of the enclosing period in microseconds, or
+   *     {@link C#UNKNOWN_TIME_US} if the period's duration is not yet known.
    * @return The duration of the segment, in microseconds.
    */
-  long getDurationUs(int segmentNum);
+  long getDurationUs(int segmentNum, long periodDurationUs);
 
   /**
    * Returns a {@link RangedUri} defining the location of a segment.
@@ -64,10 +76,30 @@ public interface DashSegmentIndex {
   int getFirstSegmentNum();
 
   /**
-   * Returns the segment number of the last segment.
+   * Returns the segment number of the last segment, or {@link #INDEX_UNBOUNDED}.
+   * <p>
+   * An unbounded index occurs if a dynamic manifest uses SegmentTemplate elements without a
+   * SegmentTimeline element, and if the period duration is not yet known. In this case the caller
+   * must manually determine the window of currently available segments.
    *
-   * @return The segment number of the last segment.
+   * @param periodDurationUs The duration of the enclosing period in microseconds, or
+   *     {@link C#UNKNOWN_TIME_US} if the period's duration is not yet known.
+   * @return The segment number of the last segment, or {@link #INDEX_UNBOUNDED}.
    */
-  int getLastSegmentNum();
+  int getLastSegmentNum(long periodDurationUs);
+
+  /**
+   * Returns true if segments are defined explicitly by the index.
+   * <p>
+   * If true is returned, each segment is defined explicitly by the index data, and all of the
+   * listed segments are guaranteed to be available at the time when the index was obtained.
+   * <p>
+   * If false is returned then segment information was derived from properties such as a fixed
+   * segment duration. If the presentation is dynamic, it's possible that only a subset of the
+   * segments are available.
+   *
+   * @return True if segments are defined explicitly by the index. False otherwise.
+   */
+  boolean isExplicit();
 
 }
