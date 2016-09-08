@@ -21,7 +21,6 @@ import com.google.android.exoplayer.chunk.Format;
 import com.google.android.exoplayer.hls.HlsMediaPlaylist.Segment;
 import com.google.android.exoplayer.upstream.UriLoadable;
 import com.google.android.exoplayer.util.MimeTypes;
-
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
@@ -306,7 +305,6 @@ public final class HlsPlaylistParser implements UriLoadable.Parser<HlsPlaylist> 
         segmentByterangeLength = C.LENGTH_UNBOUNDED;
       } else if (line.equals(ENDLIST_TAG)) {
         live = false;
-        break;
       }
     }
     return new HlsMediaPlaylist(baseUri, mediaSequence, targetDurationSecs, version, live,

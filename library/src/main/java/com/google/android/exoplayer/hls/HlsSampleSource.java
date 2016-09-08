@@ -15,6 +15,8 @@
  */
 package com.google.android.exoplayer.hls;
 
+import android.os.Handler;
+import android.os.SystemClock;
 import com.google.android.exoplayer.C;
 import com.google.android.exoplayer.LoadControl;
 import com.google.android.exoplayer.MediaFormat;
@@ -31,10 +33,6 @@ import com.google.android.exoplayer.upstream.Loader;
 import com.google.android.exoplayer.upstream.Loader.Loadable;
 import com.google.android.exoplayer.util.Assertions;
 import com.google.android.exoplayer.util.MimeTypes;
-
-import android.os.Handler;
-import android.os.SystemClock;
-
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.LinkedList;
@@ -305,11 +303,11 @@ public final class HlsSampleSource implements SampleSource, SampleSourceReader, 
       return NOTHING_READ;
     }
 
-    if (downstreamFormat == null || !downstreamFormat.equals(extractor.format)) {
-      // Notify a change in the downstream format.
-      notifyDownstreamFormatChanged(extractor.format, extractor.trigger, extractor.startTimeUs);
-      downstreamFormat = extractor.format;
+    Format format = extractor.format;
+    if (!format.equals(downstreamFormat)) {
+      notifyDownstreamFormatChanged(format, extractor.trigger, extractor.startTimeUs);
     }
+    downstreamFormat = format;
 
     if (extractors.size() > 1) {
       // If there's more than one extractor, attempt to configure a seamless splice from the
@@ -329,10 +327,17 @@ public final class HlsSampleSource implements SampleSource, SampleSourceReader, 
     }
 
     MediaFormat mediaFormat = extractor.getMediaFormat(extractorTrack);
-    if (mediaFormat != null && !mediaFormat.equals(downstreamMediaFormats[track])) {
-      formatHolder.format = mediaFormat;
+    if (mediaFormat != null) {
+      if (!mediaFormat.equals(downstreamMediaFormats[track])) {
+        formatHolder.format = mediaFormat;
+        downstreamMediaFormats[track] = mediaFormat;
+        return FORMAT_READ;
+      }
+      // If mediaFormat and downstreamMediaFormat[track] are equal but different objects then the
+      // equality check above will have been expensive, comparing the fields in each format. We
+      // update downstreamMediaFormat here so that referential equality can be cheaply established
+      // during subsequent calls.
       downstreamMediaFormats[track] = mediaFormat;
-      return FORMAT_READ;
     }
 
     if (extractor.getSample(extractorTrack, sampleHolder)) {
@@ -585,13 +590,14 @@ public final class HlsSampleSource implements SampleSource, SampleSourceReader, 
    *
    * @param format The {@link MediaFormat} to copy.
    * @param fixedTrackFormat The {@link Format} to incorporate into the copy.
-   * @param language The language to incorporate into the copy.
+   * @param languageOverride The language to incorporate into the copy.
    * @return The copied {@link MediaFormat}.
    */
   private static MediaFormat copyWithFixedTrackInfo(MediaFormat format, Format fixedTrackFormat,
-      String language) {
+      String languageOverride) {
     int width = fixedTrackFormat.width == -1 ? MediaFormat.NO_VALUE : fixedTrackFormat.width;
     int height = fixedTrackFormat.height == -1 ? MediaFormat.NO_VALUE : fixedTrackFormat.height;
+    String language = languageOverride == null ? fixedTrackFormat.language : languageOverride;
     return format.copyWithFixedTrackInfo(fixedTrackFormat.id, fixedTrackFormat.bitrate, width,
         height, language);
   }

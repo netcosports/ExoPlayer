@@ -15,6 +15,8 @@
  */
 package com.google.android.exoplayer.chunk;
 
+import android.os.Handler;
+import android.os.SystemClock;
 import com.google.android.exoplayer.C;
 import com.google.android.exoplayer.LoadControl;
 import com.google.android.exoplayer.MediaFormat;
@@ -27,10 +29,6 @@ import com.google.android.exoplayer.extractor.DefaultTrackOutput;
 import com.google.android.exoplayer.upstream.Loader;
 import com.google.android.exoplayer.upstream.Loader.Loadable;
 import com.google.android.exoplayer.util.Assertions;
-
-import android.os.Handler;
-import android.os.SystemClock;
-
 import java.io.IOException;
 import java.util.Collections;
 import java.util.LinkedList;
@@ -52,6 +50,8 @@ public class ChunkSampleSource implements SampleSource, SampleSourceReader, Load
    */
   public static final int DEFAULT_MIN_LOADABLE_RETRY_COUNT = 3;
 
+  protected final DefaultTrackOutput sampleQueue;
+
   private static final int STATE_IDLE = 0;
   private static final int STATE_INITIALIZED = 1;
   private static final int STATE_PREPARED = 2;
@@ -65,7 +65,6 @@ public class ChunkSampleSource implements SampleSource, SampleSourceReader, Load
   private final ChunkOperationHolder currentLoadableHolder;
   private final LinkedList<BaseMediaChunk> mediaChunks;
   private final List<BaseMediaChunk> readOnlyMediaChunks;
-  private final DefaultTrackOutput sampleQueue;
   private final int bufferSizeContribution;
   private final Handler eventHandler;
   private final EventListener eventListener;
@@ -249,11 +248,11 @@ public class ChunkSampleSource implements SampleSource, SampleSourceReader, Load
       currentChunk = mediaChunks.getFirst();
     }
 
-    if (downstreamFormat == null || !downstreamFormat.equals(currentChunk.format)) {
-      notifyDownstreamFormatChanged(currentChunk.format, currentChunk.trigger,
-          currentChunk.startTimeUs);
-      downstreamFormat = currentChunk.format;
+    Format format = currentChunk.format;
+    if (!format.equals(downstreamFormat)) {
+      notifyDownstreamFormatChanged(format, currentChunk.trigger, currentChunk.startTimeUs);
     }
+    downstreamFormat = format;
 
     if (haveSamples || currentChunk.isMediaFormatFinal) {
       MediaFormat mediaFormat = currentChunk.getMediaFormat();
@@ -263,6 +262,11 @@ public class ChunkSampleSource implements SampleSource, SampleSourceReader, Load
         downstreamMediaFormat = mediaFormat;
         return FORMAT_READ;
       }
+      // If mediaFormat and downstreamMediaFormat are equal but different objects then the equality
+      // check above will have been expensive, comparing the fields in each format. We update
+      // downstreamMediaFormat here so that referential equality can be cheaply established during
+      // subsequent calls.
+      downstreamMediaFormat = mediaFormat;
     }
 
     if (!haveSamples) {

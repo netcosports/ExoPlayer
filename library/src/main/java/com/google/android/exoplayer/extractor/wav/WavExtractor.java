@@ -25,7 +25,6 @@ import com.google.android.exoplayer.extractor.PositionHolder;
 import com.google.android.exoplayer.extractor.SeekMap;
 import com.google.android.exoplayer.extractor.TrackOutput;
 import com.google.android.exoplayer.util.MimeTypes;
-
 import java.io.IOException;
 
 /** {@link Extractor} to extract samples from a WAV byte stream. */
@@ -90,7 +89,8 @@ public final class WavExtractor implements Extractor, SeekMap {
               wavHeader.getNumChannels(),
               wavHeader.getSampleRateHz(),
               null,
-              null));
+              null,
+              wavHeader.getEncoding()));
       extractorOutput.seekMap(this);
     }
 

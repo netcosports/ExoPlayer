@@ -15,25 +15,6 @@
  */
 package com.google.android.exoplayer.demo.ext;
 
-import com.google.android.exoplayer.AspectRatioFrameLayout;
-import com.google.android.exoplayer.ExoPlaybackException;
-import com.google.android.exoplayer.ExoPlayer;
-import com.google.android.exoplayer.MediaCodecAudioTrackRenderer;
-import com.google.android.exoplayer.MediaCodecSelector;
-import com.google.android.exoplayer.TrackRenderer;
-import com.google.android.exoplayer.ext.flac.FlacExtractor;
-import com.google.android.exoplayer.ext.flac.LibflacAudioTrackRenderer;
-import com.google.android.exoplayer.ext.opus.LibopusAudioTrackRenderer;
-import com.google.android.exoplayer.ext.vp9.LibvpxVideoTrackRenderer;
-import com.google.android.exoplayer.ext.vp9.VpxDecoderException;
-import com.google.android.exoplayer.ext.vp9.VpxVideoSurfaceView;
-import com.google.android.exoplayer.extractor.ExtractorSampleSource;
-import com.google.android.exoplayer.extractor.webm.WebmExtractor;
-import com.google.android.exoplayer.upstream.DefaultAllocator;
-import com.google.android.exoplayer.upstream.DefaultUriDataSource;
-import com.google.android.exoplayer.util.PlayerControl;
-import com.google.android.exoplayer.util.Util;
-
 import android.Manifest.permission;
 import android.annotation.TargetApi;
 import android.app.Activity;
@@ -50,6 +31,25 @@ import android.view.View.OnTouchListener;
 import android.widget.MediaController;
 import android.widget.TextView;
 import android.widget.Toast;
+import com.google.android.exoplayer.AspectRatioFrameLayout;
+import com.google.android.exoplayer.ExoPlaybackException;
+import com.google.android.exoplayer.ExoPlayer;
+import com.google.android.exoplayer.MediaCodecAudioTrackRenderer;
+import com.google.android.exoplayer.MediaCodecSelector;
+import com.google.android.exoplayer.TrackRenderer;
+import com.google.android.exoplayer.ext.flac.FlacExtractor;
+import com.google.android.exoplayer.ext.flac.LibflacAudioTrackRenderer;
+import com.google.android.exoplayer.ext.opus.LibopusAudioTrackRenderer;
+import com.google.android.exoplayer.ext.vp9.LibvpxVideoTrackRenderer;
+import com.google.android.exoplayer.ext.vp9.VpxDecoderException;
+import com.google.android.exoplayer.ext.vp9.VpxVideoSurfaceView;
+import com.google.android.exoplayer.extractor.ExtractorSampleSource;
+import com.google.android.exoplayer.extractor.ogg.OggExtractor;
+import com.google.android.exoplayer.extractor.webm.WebmExtractor;
+import com.google.android.exoplayer.upstream.DefaultAllocator;
+import com.google.android.exoplayer.upstream.DefaultUriDataSource;
+import com.google.android.exoplayer.util.PlayerControl;
+import com.google.android.exoplayer.util.Util;
 
 /**
  * Sample player that shows how to use ExoPlayer Extensions to playback VP9 Video and Opus Audio.
@@ -141,7 +141,7 @@ public class PlayerActivity extends Activity implements
         contentUri,
         new DefaultUriDataSource(this, Util.getUserAgent(this, "ExoPlayerExtWebMDemo")),
         new DefaultAllocator(BUFFER_SEGMENT_SIZE), BUFFER_SEGMENT_SIZE * BUFFER_SEGMENT_COUNT,
-        new WebmExtractor(), new FlacExtractor());
+        new WebmExtractor(), new FlacExtractor(), new OggExtractor());
     TrackRenderer videoRenderer =
         new LibvpxVideoTrackRenderer(sampleSource, true, handler, this, 50);
     if (useOpenGL) {

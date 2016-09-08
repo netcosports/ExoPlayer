@@ -15,6 +15,11 @@
  */
 package com.google.android.exoplayer;
 
+import android.annotation.SuppressLint;
+import android.annotation.TargetApi;
+import android.content.Context;
+import android.media.MediaExtractor;
+import android.net.Uri;
 import com.google.android.exoplayer.SampleSource.SampleSourceReader;
 import com.google.android.exoplayer.drm.DrmInitData;
 import com.google.android.exoplayer.drm.DrmInitData.SchemeInitData;
@@ -23,13 +28,6 @@ import com.google.android.exoplayer.extractor.mp4.PsshAtomUtil;
 import com.google.android.exoplayer.util.Assertions;
 import com.google.android.exoplayer.util.MimeTypes;
 import com.google.android.exoplayer.util.Util;
-
-import android.annotation.SuppressLint;
-import android.annotation.TargetApi;
-import android.content.Context;
-import android.media.MediaExtractor;
-import android.net.Uri;
-
 import java.io.FileDescriptor;
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -326,10 +324,12 @@ public final class FrameworkSampleSource implements SampleSource, SampleSourceRe
     }
     long durationUs = format.containsKey(android.media.MediaFormat.KEY_DURATION)
         ? format.getLong(android.media.MediaFormat.KEY_DURATION) : C.UNKNOWN_TIME_US;
+    int pcmEncoding = MimeTypes.AUDIO_RAW.equals(mimeType) ? C.ENCODING_PCM_16BIT
+        : MediaFormat.NO_VALUE;
     MediaFormat mediaFormat = new MediaFormat(null, mimeType, MediaFormat.NO_VALUE, maxInputSize,
         durationUs, width, height, rotationDegrees, MediaFormat.NO_VALUE, channelCount, sampleRate,
         language, MediaFormat.OFFSET_SAMPLE_RELATIVE, initializationData, false,
-        MediaFormat.NO_VALUE, MediaFormat.NO_VALUE, encoderDelay, encoderPadding);
+        MediaFormat.NO_VALUE, MediaFormat.NO_VALUE, pcmEncoding, encoderDelay, encoderPadding);
     mediaFormat.setFrameworkFormatV16(format);
     return mediaFormat;
   }

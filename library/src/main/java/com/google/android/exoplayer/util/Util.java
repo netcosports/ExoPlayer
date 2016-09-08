@@ -15,11 +15,6 @@
  */
 package com.google.android.exoplayer.util;
 
-import com.google.android.exoplayer.C;
-import com.google.android.exoplayer.ExoPlayerLibraryInfo;
-import com.google.android.exoplayer.upstream.DataSource;
-import com.google.android.exoplayer.upstream.DataSpec;
-
 import android.annotation.SuppressLint;
 import android.content.Context;
 import android.content.pm.PackageInfo;
@@ -28,7 +23,10 @@ import android.content.pm.PackageManager.NameNotFoundException;
 import android.net.Uri;
 import android.os.Build;
 import android.text.TextUtils;
-
+import com.google.android.exoplayer.C;
+import com.google.android.exoplayer.ExoPlayerLibraryInfo;
+import com.google.android.exoplayer.upstream.DataSource;
+import com.google.android.exoplayer.upstream.DataSpec;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -770,6 +768,30 @@ public final class Util {
   }
 
   /**
+   * Converts a sample bit depth to a corresponding PCM encoding constant.
+   *
+   * @param bitDepth The bit depth. Supported values are 8, 16, 24 and 32.
+   * @return The corresponding encoding. One of {@link C#ENCODING_PCM_8BIT},
+   *     {@link C#ENCODING_PCM_16BIT}, {@link C#ENCODING_PCM_24BIT} and
+   *     {@link C#ENCODING_PCM_32BIT}. If the bit depth is unsupported then
+   *     {@link C#ENCODING_INVALID} is returned.
+   */
+  public static int getPcmEncoding(int bitDepth) {
+    switch (bitDepth) {
+      case 8:
+        return C.ENCODING_PCM_8BIT;
+      case 16:
+        return C.ENCODING_PCM_16BIT;
+      case 24:
+        return C.ENCODING_PCM_24BIT;
+      case 32:
+        return C.ENCODING_PCM_32BIT;
+      default:
+        return C.ENCODING_INVALID;
+    }
+  }
+
+  /**
    * Makes a best guess to infer the type from a file name.
    *
    * @param fileName Name of the file. It can include the path of the file.
@@ -794,8 +816,8 @@ public final class Util {
    * filesystems. FAT32 is the most restrictive of all filesystems still commonly used today.
    *
    * <p>For simplicity, this only handles common characters known to be illegal on FAT32:
-   * <, >, :, ", /, \, |, ?, and *. % is also escaped since it is used as the escape character.
-   * Escaping is performed in a consistent way so that no collisions occur and
+   * &lt;, &gt;, :, ", /, \, |, ?, and *. % is also escaped since it is used as the escape
+   * character. Escaping is performed in a consistent way so that no collisions occur and
    * {@link #unescapeFileName(String)} can be used to retrieve the original file name.
    *
    * @param fileName File name to be escaped.

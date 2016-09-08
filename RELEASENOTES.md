@@ -1,5 +1,29 @@
 # Release notes #
 
+### r1.5.10 ###
+
+* HLS: Stability fixes.
+* MP4: Support for stz2 Atoms.
+* Enable 4K format selection on Sony AndroidTV + nVidia SHIELD.
+* TX3G caption fixes.
+
+### r1.5.9 ###
+
+* MP4: Fixed incorrect sniffing in some cases (#1523).
+* MP4: Improved file compatibility (#1567).
+* ID3: Support for TIT2 and APIC frames.
+* Fixed querying of platform decoders on some devices.
+* Misc bug fixes.
+
+### r1.5.8 ###
+
+* HLS: Fix handling of HTTP redirects.
+* Audio: Minor adjustment to improve A/V sync.
+* OGG: Support FLAC in OGG.
+* TTML: Support regions.
+* WAV/PCM: Support 8, 24 and 32-bit WAV and PCM audio.
+* Misc bug fixes and performance optimizations.
+
 ### r1.5.7 ###
 
 * OGG: Support added for OGG.
@@ -96,6 +120,7 @@
 * TTML: Improved handling of whitespace.
 * DASH: Support Mpd.Location element.
 * Add option to TsExtractor to allow non-IDR keyframes.
+* Added MulticastDataSource for connecting to multicast streams.
 * (WorkInProgress) - First steps to supporting seeking in DASH DVR window.
 * (WorkInProgress) - First steps to supporting styled + positioned subtitles.
 * Misc bug fixes.
